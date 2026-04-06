@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from typing import Any, cast
 
 from redis.asyncio import Redis
@@ -15,6 +16,7 @@ class RedisQueue:
     def __init__(self, url: str | None = None, queue_name: str | None = None) -> None:
         self._url = url or settings.redis_url
         self._queue_name = queue_name or settings.redis_detection_queue
+        self._alerts_channel = "kaamo:stream:alerts"
         self._client: Redis | None = None
 
     async def connect(self) -> Redis:
@@ -45,3 +47,25 @@ class RedisQueue:
             return None
         _, raw_payload = item
         return cast(dict[str, Any], json.loads(raw_payload))
+
+    async def queue_depth(self) -> int:
+        return int(await cast(Any, self.client.llen(self._queue_name)))
+
+    async def publish_alert(self, payload: dict[str, Any]) -> None:
+        await cast(Any, self.client.publish(self._alerts_channel, json.dumps(payload)))
+
+    async def subscribe_alerts(self) -> AsyncIterator[dict[str, Any]]:
+        pubsub = self.client.pubsub()
+        await cast(Any, pubsub.subscribe(self._alerts_channel))
+        try:
+            while True:
+                message = await cast(Any, pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0))
+                if message is None:
+                    continue
+                data = message.get("data")
+                if not isinstance(data, str):
+                    continue
+                yield cast(dict[str, Any], json.loads(data))
+        finally:
+            await cast(Any, pubsub.unsubscribe(self._alerts_channel))
+            await cast(Any, pubsub.close())

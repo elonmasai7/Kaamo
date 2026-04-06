@@ -63,6 +63,63 @@ class ArtifactRequest(BaseModel):
     content: str
 
 
+class QueueMetricsResponse(BaseModel):
+    queue_depth: int
+    detection_workers: int
+
+
+class AlertRecord(BaseModel):
+    alert_id: str
+    rule_id: str
+    name: str
+    severity: str
+    event_ids: list[str]
+    host: str | None = None
+    user: str | None = None
+    reason: str
+    mitre: dict[str, Any]
+    status: str
+    created_at: str
+
+
+class IncidentRecord(BaseModel):
+    incident_id: str
+    title: str
+    severity: str
+    host: str | None = None
+    user: str | None = None
+    reason: str
+    status: str
+    created_at: str
+    priority_score: float
+    likely_attack_stage: str
+    confidence: float
+
+
+class FindingRecord(BaseModel):
+    finding_id: str
+    title: str
+    severity: str
+    host: str | None = None
+    summary: str
+    likely_attack_stage: str
+    priority_score: float
+    created_at: str
+
+
+class ThreatHuntResponse(BaseModel):
+    hypotheses: list[HuntHypothesis]
+    suspicious_hosts: list[dict[str, Any]]
+    recent_anomalies: list[dict[str, Any]]
+
+
+class EvidenceTimelineEntry(BaseModel):
+    timestamp: str
+    kind: str
+    title: str
+    details: dict[str, Any]
+
+
 @dataclass(slots=True)
 class BlueTeamService:
     event_repo: SecurityEventRepository
@@ -133,6 +190,8 @@ class BlueTeamService:
             await self.detection_repo.upsert_triage(alert["alert_id"], triage)
         hunt_context = SecurityContext(events=events, alerts=stored_alerts[: len(alerts)])
         hypotheses = self.hunting_module.generate_hypotheses(hunt_context)
+        for alert in stored_alerts[: len(alerts)]:
+            await self.queue.publish_alert(alert)
         await self._audit("blueteam.detections.process", actor, "detection-engine", alerts=len(alerts), events=len(events))
         return DetectionProcessResponse(
             processed_event_ids=event_ids,
@@ -156,15 +215,40 @@ class BlueTeamService:
                 logger.error("blueteam.worker.failure", error=str(exc))
                 await asyncio.sleep(1)
 
-    async def list_alerts(self, limit: int = 200) -> list[dict[str, Any]]:
-        return await self.detection_repo.list_alerts(limit=limit)
+    async def list_alerts(self, limit: int = 200) -> list[AlertRecord]:
+        rows = await self.detection_repo.list_alerts(limit=limit)
+        return [AlertRecord.model_validate(row) for row in rows]
+
+    async def list_incidents(
+        self,
+        *,
+        limit: int = 200,
+        severity: str | None = None,
+        search: str | None = None,
+        sort_by: str = "created_at",
+        descending: bool = True,
+    ) -> list[IncidentRecord]:
+        rows = await self.detection_repo.list_incidents(
+            limit=limit,
+            severity=severity,
+            search=search,
+            sort_by=sort_by,
+            descending=descending,
+        )
+        return [IncidentRecord.model_validate(row) for row in rows]
+
+    async def list_findings(self, limit: int = 200) -> list[FindingRecord]:
+        rows = await self.detection_repo.list_findings(limit=limit)
+        return [FindingRecord.model_validate(row) for row in rows]
 
     async def build_dashboard(self) -> SOCDashboard:
-        alerts = await self.detection_repo.list_alerts(limit=500)
+        alerts = [alert.model_dump(mode="json") for alert in await self.list_alerts(limit=500)]
+        incidents = [incident.model_dump(mode="json") for incident in await self.list_incidents(limit=500)]
         dashboard = self.dashboard_module.build_dashboard(
             SecurityContext(
                 alerts=alerts,
                 metadata={
+                    "incidents": incidents,
                     "coverage_gap_score": await self._latest_coverage_gap(),
                 },
             )
@@ -179,14 +263,14 @@ class BlueTeamService:
         return artifact
 
     async def validate_coverage(self, request: CoverageRequest, actor: str) -> list[DetectionCoverage]:
-        detections = await self.detection_repo.list_alerts(limit=1000)
+        detections = [alert.model_dump(mode="json") for alert in await self.list_alerts(limit=1000)]
         coverage = self.validation_bridge.validate(request.attack_paths, detections)
         await self.coverage_repo.upsert_coverage(coverage)
         await self._audit("blueteam.coverage.validate", actor, "validation-bridge", attack_paths=len(request.attack_paths))
         return coverage
 
     async def compliance_reports(self) -> list[dict[str, Any]]:
-        alerts = await self.detection_repo.list_alerts(limit=500)
+        alerts = [alert.model_dump(mode="json") for alert in await self.list_alerts(limit=500)]
         reports = self.compliance_module.generate_reports(
             SecurityContext(
                 alerts=alerts,
@@ -195,14 +279,70 @@ class BlueTeamService:
         )
         return [report.model_dump(mode="json") for report in reports]
 
+    async def threat_hunting_view(self) -> ThreatHuntResponse:
+        events = await self.event_repo.fetch_recent(limit=500)
+        alerts = [alert.model_dump(mode="json") for alert in await self.list_alerts(limit=200)]
+        hypotheses = self.hunting_module.generate_hypotheses(SecurityContext(events=events, alerts=alerts))
+        suspicious_hosts: dict[str, int] = {}
+        for alert in alerts:
+            host = str(alert.get("host") or "unknown")
+            suspicious_hosts[host] = suspicious_hosts.get(host, 0) + 1
+        recent_anomalies = [
+            {
+                "metric": "alert_density",
+                "host": host,
+                "observed_value": count,
+            }
+            for host, count in sorted(suspicious_hosts.items(), key=lambda item: item[1], reverse=True)[:10]
+        ]
+        return ThreatHuntResponse(
+            hypotheses=hypotheses,
+            suspicious_hosts=[
+                {"host": host, "alert_count": count}
+                for host, count in sorted(suspicious_hosts.items(), key=lambda item: item[1], reverse=True)[:10]
+            ],
+            recent_anomalies=recent_anomalies,
+        )
+
+    async def evidence_timeline(self, limit: int = 200) -> list[EvidenceTimelineEntry]:
+        artifacts = await self.forensic_repo.list_artifacts(limit=limit)
+        audits = await self.audit_repo.list_recent(limit=limit)
+        entries = [
+            EvidenceTimelineEntry(
+                timestamp=artifact["collected_at"],
+                kind="artifact",
+                title=f"{artifact['artifact_id']} on {artifact['source_host']}",
+                details=artifact,
+            )
+            for artifact in artifacts
+        ] + [
+            EvidenceTimelineEntry(
+                timestamp=audit["occurred_at"],
+                kind="audit",
+                title=f"{audit['action']} by {audit['actor']}",
+                details=audit,
+            )
+            for audit in audits
+        ]
+        return sorted(entries, key=lambda entry: entry.timestamp, reverse=True)[:limit]
+
+    async def coverage_view(self, limit: int = 100) -> list[DetectionCoverage]:
+        rows = await self.coverage_repo.list_recent(limit=limit)
+        return [DetectionCoverage.model_validate(row) for row in rows]
+
+    async def queue_metrics(self, detection_workers: int) -> QueueMetricsResponse:
+        return QueueMetricsResponse(
+            queue_depth=await self.queue.queue_depth(),
+            detection_workers=detection_workers,
+        )
+
     async def _latest_coverage_gap(self) -> float:
-        alerts = await self.detection_repo.list_alerts(limit=500)
+        alerts = await self.list_alerts(limit=500)
         if not alerts:
             return 0.0
-        with_coverage = sum(1 for alert in alerts if alert.get("mitre"))
+        with_coverage = sum(1 for alert in alerts if alert.mitre)
         return round(1 - (with_coverage / len(alerts)), 4)
 
     async def _audit(self, action: str, actor: str, target: str, **metadata: Any) -> None:
         write_audit_log(action, actor, target, **metadata)
         await self.audit_repo.insert(action=action, actor=actor, target=target, metadata=metadata)
-

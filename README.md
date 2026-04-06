@@ -1,6 +1,6 @@
 # Kaamo
 
-Kaamo is an offline-first, security-focused runtime for sandboxed AI agents. This repository scaffolds the native cache/security primitives, Python orchestration layers, model-management workflow, daemon surface, CLI entrypoints, and an initial test suite for secure local Gemma-based inference with optional NVIDIA fallback.
+Kaamo is an offline-first, security-focused runtime for sandboxed AI agents. The primary operator experience is terminal-first: a live SOC and purple-team dashboard runs directly inside Linux/macOS terminals and remote SSH sessions through `kaamo dashboard`.
 
 ## What is included
 
@@ -32,5 +32,58 @@ This is a production-oriented scaffold, not a fully provisioned deployment bundl
 
 - `llama-cpp-python` and GPU acceleration are optional and not bundled here
 - Docker, Redis, PostgreSQL, and seccomp enforcement need host-level provisioning
-- Official Gemma SHA-256 hashes must be populated before real model downloads are enabled
+- A real Gemma manifest with official SHA-256 values must exist before model download or verification is enabled
 
+## Terminal Dashboard
+
+Kaamo ships a live terminal dashboard built on Textual.
+
+1. Apply the database schema:
+
+```bash
+kaamo db-migrate
+```
+
+2. Create an analyst token:
+
+```bash
+kaamo create-token analyst-user --role analyst
+```
+
+3. Start the daemon:
+
+```bash
+uvicorn kaamo.daemon.server:app --host 127.0.0.1 --port 8080
+```
+
+You can also bind the daemon to a Unix domain socket for local terminal sessions:
+
+```bash
+uvicorn kaamo.daemon.server:app --uds "$HOME/.kaamo/kaamod.sock"
+```
+
+4. Launch the terminal UI:
+
+```bash
+KAAMO_API_TOKEN="<token>" kaamo dashboard
+```
+
+Low-resource mode disables websocket streaming and lengthens refresh cadence:
+
+```bash
+KAAMO_API_TOKEN="<token>" kaamo dashboard --low-resource
+```
+
+Keybindings:
+
+- `q` quit
+- `r` refresh
+- `f` findings
+- `i` incidents
+- `a` alerts
+- `t` threat hunting
+- `e` evidence
+- `d` dashboard
+- `/` search
+- `enter` inspect current item
+- `esc` back

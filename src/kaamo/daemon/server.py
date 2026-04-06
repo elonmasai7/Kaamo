@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 
 from kaamo.blueteam.dashboards.soc_dashboard import SOCDashboard
 from kaamo.blueteam.detection.rules_engine import RulesEngine
@@ -13,11 +13,17 @@ from kaamo.blueteam.response.playbooks import ResponsePlaybookModule
 from kaamo.blueteam.dashboards.soc_dashboard import SOCDashboardModule
 from kaamo.blueteam.service import (
     ArtifactRequest,
+    AlertRecord,
     BlueTeamService,
     CoverageRequest,
     DetectionProcessResponse,
+    EvidenceTimelineEntry,
     EventIngestRequest,
     EventIngestResponse,
+    FindingRecord,
+    IncidentRecord,
+    QueueMetricsResponse,
+    ThreatHuntResponse,
 )
 from kaamo.blueteam.threat_intel.hunting import ThreatHuntingModule
 from kaamo.blueteam.triage.ai_triage import AITriageEngine
@@ -27,6 +33,7 @@ from kaamo.db.postgres import MigrationRunner, PostgresDatabase
 from kaamo.db.redis import RedisQueue
 from kaamo.db.repositories import (
     AuditRepository,
+    AuthRepository,
     CoverageRepository,
     DetectionRepository,
     ForensicRepository,
@@ -121,15 +128,45 @@ def create_app() -> FastAPI:
             )
         return await service.process_detection_payload(queued, actor.actor)
 
-    @app.get("/api/v1/blueteam/alerts")
+    @app.get("/api/v1/blueteam/alerts", response_model=list[AlertRecord])
     async def list_alerts(
         request: Request,
         actor: AuthenticatedActor = Depends(require_authentication),
         limit: int = 200,
-    ) -> list[dict[str, object]]:
+    ) -> list[AlertRecord]:
         del actor
         service: BlueTeamService = request.app.state.blueteam_service
         return await service.list_alerts(limit=limit)
+
+    @app.get("/api/v1/blueteam/incidents", response_model=list[IncidentRecord])
+    async def list_incidents(
+        request: Request,
+        actor: AuthenticatedActor = Depends(require_authentication),
+        limit: int = 200,
+        severity: str | None = None,
+        search: str | None = None,
+        sort_by: str = "created_at",
+        descending: bool = True,
+    ) -> list[IncidentRecord]:
+        del actor
+        service: BlueTeamService = request.app.state.blueteam_service
+        return await service.list_incidents(
+            limit=limit,
+            severity=severity,
+            search=search,
+            sort_by=sort_by,
+            descending=descending,
+        )
+
+    @app.get("/api/v1/blueteam/findings", response_model=list[FindingRecord])
+    async def list_findings(
+        request: Request,
+        actor: AuthenticatedActor = Depends(require_authentication),
+        limit: int = 200,
+    ) -> list[FindingRecord]:
+        del actor
+        service: BlueTeamService = request.app.state.blueteam_service
+        return await service.list_findings(limit=limit)
 
     @app.get("/api/v1/blueteam/dashboard", response_model=SOCDashboard)
     async def get_dashboard(
@@ -140,6 +177,15 @@ def create_app() -> FastAPI:
         service: BlueTeamService = request.app.state.blueteam_service
         return await service.build_dashboard()
 
+    @app.get("/api/v1/blueteam/threat-hunting", response_model=ThreatHuntResponse)
+    async def threat_hunting(
+        request: Request,
+        actor: AuthenticatedActor = Depends(require_authentication),
+    ) -> ThreatHuntResponse:
+        del actor
+        service: BlueTeamService = request.app.state.blueteam_service
+        return await service.threat_hunting_view()
+
     @app.post("/api/v1/blueteam/forensics/artifacts", response_model=ForensicArtifact)
     async def collect_forensic_artifact(
         request_model: ArtifactRequest,
@@ -148,6 +194,16 @@ def create_app() -> FastAPI:
     ) -> ForensicArtifact:
         service: BlueTeamService = request.app.state.blueteam_service
         return await service.collect_forensic_artifact(request_model, actor.actor)
+
+    @app.get("/api/v1/blueteam/evidence/timeline", response_model=list[EvidenceTimelineEntry])
+    async def evidence_timeline(
+        request: Request,
+        actor: AuthenticatedActor = Depends(require_authentication),
+        limit: int = 200,
+    ) -> list[EvidenceTimelineEntry]:
+        del actor
+        service: BlueTeamService = request.app.state.blueteam_service
+        return await service.evidence_timeline(limit=limit)
 
     @app.post("/api/v1/blueteam/validation/coverage", response_model=list[DetectionCoverage])
     async def validate_coverage(
@@ -158,6 +214,25 @@ def create_app() -> FastAPI:
         service: BlueTeamService = request.app.state.blueteam_service
         return await service.validate_coverage(request_model, actor.actor)
 
+    @app.get("/api/v1/blueteam/validation/coverage", response_model=list[DetectionCoverage])
+    async def get_coverage(
+        request: Request,
+        actor: AuthenticatedActor = Depends(require_authentication),
+        limit: int = 100,
+    ) -> list[DetectionCoverage]:
+        del actor
+        service: BlueTeamService = request.app.state.blueteam_service
+        return await service.coverage_view(limit=limit)
+
+    @app.get("/api/v1/blueteam/queue-metrics", response_model=QueueMetricsResponse)
+    async def queue_metrics(
+        request: Request,
+        actor: AuthenticatedActor = Depends(require_authentication),
+    ) -> QueueMetricsResponse:
+        del actor
+        service: BlueTeamService = request.app.state.blueteam_service
+        return await service.queue_metrics(settings.detection_worker_concurrency)
+
     @app.get("/api/v1/blueteam/compliance/reports")
     async def compliance_reports(
         request: Request,
@@ -166,6 +241,32 @@ def create_app() -> FastAPI:
         del actor
         service: BlueTeamService = request.app.state.blueteam_service
         return await service.compliance_reports()
+
+    @app.websocket("/ws/v1/blueteam/alerts")
+    async def live_alert_stream(
+        websocket: WebSocket,
+        token: str | None = Query(default=None),
+    ) -> None:
+        if token is None:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        auth_repo = AuthRepository(websocket.app.state.postgres.pool)
+        principal = await auth_repo.validate_token(token)
+        if principal is None:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        await websocket.accept()
+        stream = websocket.app.state.redis_queue.subscribe_alerts()
+        try:
+            while True:
+                payload = await stream.__anext__()
+                await websocket.send_json(payload)
+        except StopAsyncIteration:
+            await websocket.close()
+        except WebSocketDisconnect:
+            return
+        except Exception:
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
 
     return app
 

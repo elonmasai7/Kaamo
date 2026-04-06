@@ -38,6 +38,27 @@ class AuditRepository:
             metadata,
         )
 
+    async def list_recent(self, limit: int = 200) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT action, actor, target, metadata, occurred_at
+            FROM audit_logs
+            ORDER BY occurred_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [
+            {
+                "action": row["action"],
+                "actor": row["actor"],
+                "target": row["target"],
+                "metadata": row["metadata"],
+                "occurred_at": row["occurred_at"].isoformat(),
+            }
+            for row in rows
+        ]
+
 
 class SecurityEventRepository:
     def __init__(self, pool: asyncpg.Pool) -> None:
@@ -234,6 +255,88 @@ class DetectionRepository:
             for row in rows
         ]
 
+    async def list_incidents(
+        self,
+        *,
+        limit: int = 200,
+        severity: str | None = None,
+        search: str | None = None,
+        sort_by: str = "created_at",
+        descending: bool = True,
+    ) -> list[dict[str, Any]]:
+        allowed_sort_columns = {"created_at", "severity", "priority_score", "host"}
+        order_column = sort_by if sort_by in allowed_sort_columns else "created_at"
+        order_direction = "DESC" if descending else "ASC"
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if severity:
+            params.append(severity)
+            clauses.append(f"a.severity = ${len(params)}")
+        if search:
+            params.append(f"%{search.lower()}%")
+            clauses.append(
+                f"(LOWER(a.name) LIKE ${len(params)} OR LOWER(COALESCE(a.host, '')) LIKE ${len(params)} "
+                f"OR LOWER(COALESCE(a.user_name, '')) LIKE ${len(params)} OR LOWER(a.reason) LIKE ${len(params)})"
+            )
+        params.append(limit)
+        where_clause = " AND ".join(clauses)
+        rows = await self._pool.fetch(
+            f"""
+            SELECT a.alert_id, a.name, a.severity, a.host, a.user_name, a.reason, a.status, a.created_at,
+                   COALESCE(t.priority_score, 0.0) AS priority_score,
+                   COALESCE(t.likely_attack_stage, 'untriaged') AS likely_attack_stage,
+                   COALESCE(t.confidence, 0.0) AS confidence
+            FROM detection_alerts AS a
+            LEFT JOIN triage_results AS t ON t.alert_id = a.alert_id
+            WHERE {where_clause}
+            ORDER BY {order_column} {order_direction}
+            LIMIT ${len(params)}
+            """,
+            *params,
+        )
+        return [
+            {
+                "incident_id": row["alert_id"],
+                "title": row["name"],
+                "severity": row["severity"],
+                "host": row["host"],
+                "user": row["user_name"],
+                "reason": row["reason"],
+                "status": row["status"],
+                "created_at": row["created_at"].isoformat(),
+                "priority_score": float(row["priority_score"]),
+                "likely_attack_stage": row["likely_attack_stage"],
+                "confidence": float(row["confidence"]),
+            }
+            for row in rows
+        ]
+
+    async def list_findings(self, limit: int = 200) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT a.alert_id, a.name, a.severity, a.host, a.reason, a.created_at,
+                   t.priority_score, t.likely_attack_stage
+            FROM detection_alerts AS a
+            LEFT JOIN triage_results AS t ON t.alert_id = a.alert_id
+            ORDER BY a.created_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [
+            {
+                "finding_id": row["alert_id"],
+                "title": row["name"],
+                "severity": row["severity"],
+                "host": row["host"],
+                "summary": row["reason"],
+                "likely_attack_stage": row["likely_attack_stage"] or "untriaged",
+                "priority_score": float(row["priority_score"] or 0.0),
+                "created_at": row["created_at"].isoformat(),
+            }
+            for row in rows
+        ]
+
     async def upsert_triage(self, alert_id: str, triage: TriageResult) -> None:
         await self._pool.execute(
             """
@@ -287,6 +390,27 @@ class ForensicRepository:
             artifact.evidence_path,
         )
 
+    async def list_artifacts(self, limit: int = 200) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT artifact_id, source_host, collected_at, sha256, evidence_path
+            FROM forensic_artifacts
+            ORDER BY collected_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [
+            {
+                "artifact_id": row["artifact_id"],
+                "source_host": row["source_host"],
+                "collected_at": row["collected_at"].isoformat(),
+                "sha256": row["sha256"],
+                "evidence_path": row["evidence_path"],
+            }
+            for row in rows
+        ]
+
 
 class CoverageRepository:
     def __init__(self, pool: asyncpg.Pool) -> None:
@@ -317,6 +441,27 @@ class CoverageRepository:
                         for item in coverage
                     ],
                 )
+
+    async def list_recent(self, limit: int = 100) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT attack_path_id, covered_steps, uncovered_steps, coverage_score, created_at
+            FROM detection_coverage
+            ORDER BY created_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [
+            {
+                "attack_path_id": row["attack_path_id"],
+                "covered_steps": row["covered_steps"],
+                "uncovered_steps": row["uncovered_steps"],
+                "coverage_score": float(row["coverage_score"]),
+                "created_at": row["created_at"].isoformat(),
+            }
+            for row in rows
+        ]
 
 
 class AuthRepository:
@@ -353,4 +498,3 @@ class AuthRepository:
         if row is None:
             return None
         return {"token_id": row["token_id"], "actor": row["actor"], "role": row["role"]}
-

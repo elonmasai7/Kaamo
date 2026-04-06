@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import typer
 
-from kaamo.cli import benchmark, chat, create, db_migrate, list as list_cmd, logs, pull_model, remove, start, status, stop, token, verify_model
+from kaamo.cli import benchmark, chat, create, dashboard, db_migrate, list as list_cmd, logs, pull_model, remove, start, status, stop, token, verify_model
 
 app = typer.Typer(help="Kaamo secure offline-first AI runtime")
 app.command(name="create")(create.create)
 app.command(name="chat")(chat.chat)
+app.command(name="dashboard")(dashboard.dashboard)
 app.command(name="db-migrate")(db_migrate.db_migrate)
 app.command(name="start")(start.start)
 app.command(name="stop")(stop.stop)
