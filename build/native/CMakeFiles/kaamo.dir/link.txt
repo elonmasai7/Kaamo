@@ -1,0 +1,1 @@
+/usr/bin/cc -fPIC -g -Wl,--dependency-file=CMakeFiles/kaamo.dir/link.d -shared -Wl,-soname,libkaamo.so -o libkaamo.so CMakeFiles/kaamo.dir/cache.c.o CMakeFiles/kaamo.dir/kv_cache.c.o CMakeFiles/kaamo.dir/throttle.c.o CMakeFiles/kaamo.dir/sha256_verify.c.o CMakeFiles/kaamo.dir/seccomp_profile.c.o  /usr/lib/x86_64-linux-gnu/libcrypto.so -lpthread

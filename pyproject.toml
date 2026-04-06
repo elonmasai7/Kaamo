@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kaamo"
+version = "2.0.0"
+description = "Offline-first secure sandboxed AI agent runtime."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+  { name = "Kaamo Contributors" }
+]
+dependencies = [
+  "asyncpg>=0.30.0",
+  "fastapi>=0.116.0",
+  "httpx>=0.28.0",
+  "msgpack>=1.1.0",
+  "prometheus-client>=0.22.0",
+  "pydantic>=2.10.0",
+  "pydantic-settings>=2.8.0",
+  "python-keyring>=25.6.0",
+  "redis>=5.2.0",
+  "structlog>=25.1.0",
+  "typer>=0.16.0",
+  "uvloop>=0.21.0; platform_system != 'Windows'",
+]
+
+[project.optional-dependencies]
+all = [
+  "docker>=7.1.0",
+  "llama-cpp-python>=0.3.6",
+  "nvidia-ml-py>=12.570.86",
+  "orjson>=3.10.0",
+  "uvicorn[standard]>=0.34.0",
+]
+dev = [
+  "coverage[toml]>=7.6.0",
+  "locust>=2.37.0",
+  "mypy>=1.15.0",
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.25.0",
+]
+
+[project.scripts]
+kaamo = "kaamo.cli.main:app"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+packages = ["kaamo"]
+
+[tool.coverage.run]
+branch = true
+source = ["src/kaamo"]
