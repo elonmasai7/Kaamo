@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 
 class InferenceBackend(ABC):
     @abstractmethod
-    async def generate(
+    def generate(
         self,
         messages: list[dict[str, str]],
         max_tokens: int = 512,
@@ -14,4 +14,3 @@ class InferenceBackend(ABC):
         stream: bool = True,
     ) -> AsyncIterator[str]:
         raise NotImplementedError
-

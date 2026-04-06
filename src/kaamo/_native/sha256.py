@@ -17,12 +17,12 @@ def verify_file(path: Path, expected_sha256: str) -> bool:
             str(path).encode("utf-8"),
             expected_sha256.encode("utf-8"),
         )
-        if result < 0:
-            raise RuntimeError(f"Native SHA-256 verification failed with code {result}")
-        return result == 1
+        result_int = int(result)
+        if result_int < 0:
+            raise RuntimeError(f"Native SHA-256 verification failed with code {result_int}")
+        return result_int == 1
     hasher = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(65536), b""):
             hasher.update(chunk)
     return hasher.hexdigest() == expected_sha256
-

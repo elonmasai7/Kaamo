@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-try:
-    import asyncpg
-except ImportError:  # pragma: no cover - fallback for minimal environments
-    asyncpg = None  # type: ignore[assignment]
+import asyncpg
 
 from kaamo.logging import get_logger
 

@@ -1,33 +1,6 @@
 from __future__ import annotations
 
-try:
-    from prometheus_client import Counter, Gauge, Histogram
-except ImportError:  # pragma: no cover - fallback for minimal environments
-    class _Metric:
-        def labels(self, **kwargs):
-            del kwargs
-            return self
-
-        def inc(self, amount: float = 1.0) -> None:
-            del amount
-
-        def observe(self, amount: float) -> None:
-            del amount
-
-        def set(self, amount: float) -> None:
-            del amount
-
-    def Counter(*args, **kwargs):  # type: ignore[misc]
-        del args, kwargs
-        return _Metric()
-
-    def Gauge(*args, **kwargs):  # type: ignore[misc]
-        del args, kwargs
-        return _Metric()
-
-    def Histogram(*args, **kwargs):  # type: ignore[misc]
-        del args, kwargs
-        return _Metric()
+from prometheus_client import Counter, Gauge, Histogram
 
 cache_hits_total = Counter(
     "kaamo_cache_hits_total",

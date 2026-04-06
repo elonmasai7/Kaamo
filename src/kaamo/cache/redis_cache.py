@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import msgpack
 from redis.asyncio import Redis
+from typing import cast
 
 from kaamo.cache.base import AsyncCache
 from kaamo.config import settings
@@ -15,7 +16,7 @@ class RedisCache(AsyncCache[str, object]):
         payload = await self._client.get(key)
         if payload is None:
             return None
-        return msgpack.unpackb(payload, raw=False)
+        return cast(object, msgpack.unpackb(payload, raw=False))
 
     async def set(self, key: str, value: object, ttl_s: int) -> None:
         payload = msgpack.packb(value, use_bin_type=True)
@@ -23,4 +24,3 @@ class RedisCache(AsyncCache[str, object]):
 
     async def delete(self, key: str) -> None:
         await self._client.delete(key)
-

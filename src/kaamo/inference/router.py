@@ -11,6 +11,7 @@ from kaamo.inference.backends.llamacpp_backend import LlamaCppBackend
 from kaamo.inference.backends.nvidia_backend import NVIDIAAPIError, NvidiaBackend
 from kaamo.inference.model_pool import GemmaModelPool
 from kaamo.logging import get_logger
+from kaamo.models.gemma_manager import resolve_model_path
 
 logger = get_logger(__name__)
 
@@ -30,7 +31,7 @@ class InferenceRouter:
     ) -> None:
         self.gemma_pool = gemma_pool
         self.nvidia = nvidia or NvidiaBackend()
-        self.gemma = gemma_backend or LlamaCppBackend(model_path="/tmp/gemma-placeholder.gguf")
+        self.gemma = gemma_backend
 
     async def route(
         self,
@@ -85,6 +86,13 @@ class InferenceRouter:
         temperature: float,
     ) -> AsyncIterator[str]:
         if self.gemma_pool is None:
+            if self.gemma is None:
+                model_path = resolve_model_path(settings.gemma_model)
+                self.gemma = LlamaCppBackend(
+                    model_path=str(model_path),
+                    n_ctx=settings.gemma_context_length,
+                    model_variant=settings.gemma_model,
+                )
             async for token in self.gemma.generate(messages, max_tokens, temperature=temperature):
                 yield token
             return
@@ -103,4 +111,3 @@ class InferenceRouter:
         if re.search(r"\b(analyze|enumerate|reverse engineer|multi-step|exploit)\b", joined, flags=re.IGNORECASE):
             return "complex"
         return "simple"
-

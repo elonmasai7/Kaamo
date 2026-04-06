@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from kaamo.logging import get_logger
 from kaamo.sandbox.network import hybrid_network_policy, offline_network_policy
@@ -29,7 +29,7 @@ class SandboxSpec:
 
 class KaamoDockerClient:
     def __init__(self) -> None:
-        self._client = docker.from_env() if docker is not None else None
+        self._client = cast(Any, docker).from_env() if docker is not None else None
 
     def create_agent_container(self, spec: SandboxSpec) -> dict[str, Any]:
         security_opt = [f"seccomp={json.dumps(generate_seccomp_profile())}"]
